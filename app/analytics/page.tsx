@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Avatar, Delta, EmptyNote, ErrorNote, PageTitle, RangePicker, Stat } from "@/components/ui";
-import { browserTimeZone, money, percentChange, previousBounds, rangeBounds, shortDay, type DateRange } from "@/lib/format";
+import { FinanceSummary } from "@/components/finance-summary";
+import { Avatar, EmptyNote, ErrorNote, PageTitle, RangePicker, Stat } from "@/components/ui";
+import { browserTimeZone, money, previousBounds, rangeBounds, shortDay, type DateRange } from "@/lib/format";
 import { supabase } from "@/lib/supabase";
 import type { Analytics, ClientBalance } from "@/lib/types";
 
@@ -273,20 +274,11 @@ export default function AnalyticsPage() {
 
       {data && (
         <>
+          <FinanceSummary data={data} previous={previous} />
+
           <div className="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-4">
-            <Stat
-              label="Total sales"
-              value={money(data.sales_total)}
-              icon="total"
-              footer={<Delta change={previous ? percentChange(data.sales_total, previous.sales_total) : null} suffix="vs before" emptyLabel="Nothing to compare" />}
-            />
-            <Stat
-              label="Money received"
-              value={money(data.collected)}
-              icon="wallet"
-              tone="brand"
-              footer={<Delta change={previous ? percentChange(data.collected, previous.collected) : null} suffix="vs before" emptyLabel="Nothing to compare" />}
-            />
+            <Stat label="Received in cash" value={money(data.by_method.cash)} icon="cash" tone="brand" />
+            <Stat label="Received by M-PESA" value={money(data.by_method.mpesa)} icon="mobile" tone="brand" />
             <Stat
               label="Unpaid from this period"
               value={money(data.credit_given)}
@@ -300,18 +292,6 @@ export default function AnalyticsPage() {
               icon="clients"
               tone="credit"
               footer={<span className="text-xs text-muted">{data.sale_count} {data.sale_count === 1 ? "sale" : "sales"} in this period</span>}
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-4">
-            <Stat label="Received in cash" value={money(data.by_method.cash)} icon="cash" tone="brand" />
-            <Stat label="Received by M-PESA" value={money(data.by_method.mpesa)} icon="mobile" tone="brand" />
-            <Stat label="Expenses" value={money(data.expenses_total)} icon="expenses" tone="danger" />
-            <Stat
-              label="Received less expenses"
-              value={money(data.collected - data.expenses_total)}
-              icon="wallet"
-              tone={data.collected - data.expenses_total < 0 ? "danger" : "brand"}
             />
           </div>
           {data.by_method.unspecified > 0 && (

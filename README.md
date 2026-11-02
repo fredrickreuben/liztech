@@ -10,8 +10,8 @@ Built with Next.js, Tailwind CSS, Lucide icons and Supabase.
 - **Sales:** filter by date, status, service, staff, or customer.
 - **Clients:** each client's balance and ledger of services and payments, with editing and deleting. A payment clears their oldest unpaid sales first.
 - **Analytics:** sales, money received, credit, top services, and sales by staff for any period.
-- **Expenses:** record costs from presets or by hand, with the amount editable each time.
-- **Admin (admins only):** add and remove services and expense presets, change charges, add users, make users admin or staff, and clear all sales or expenses.
+- **Expenses:** record costs from presets or by hand, with the amount editable each time, and pay recurring bills as they come due.
+- **Admin (admins only):** see revenue, income, expenses, profit and balance for any period, manage recurring bills, add and remove services and expense presets, change charges, add users, make users admin or staff, and clear all sales or expenses.
 - **Account:** anyone can change their own username and password.
 
 Paid sales need no customer details and are recorded as "Walk-in". Credit sales need a name and phone.

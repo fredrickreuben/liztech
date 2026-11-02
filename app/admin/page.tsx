@@ -3,10 +3,11 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
-import { Avatar, ConfirmDialog, EmptyNote, ErrorNote, Icon, PageTitle } from "@/components/ui";
-import { money } from "@/lib/format";
+import { FinanceSummary } from "@/components/finance-summary";
+import { Avatar, ConfirmDialog, EmptyNote, ErrorNote, Icon, PageTitle, RangePicker } from "@/components/ui";
+import { browserTimeZone, frequencyLabels, localDay, money, previousBounds, rangeBounds, shortDay, type DateRange } from "@/lib/format";
 import { createSignupClient, supabase } from "@/lib/supabase";
-import type { ExpensePreset, Profile, Role, Service } from "@/lib/types";
+import type { Analytics, BillFrequency, ExpensePreset, Profile, Role, Service } from "@/lib/types";
 
 export default function AdminPage() {
   const { profile } = useAuth();
@@ -25,9 +26,11 @@ export default function AdminPage() {
   return (
     <div>
       <PageTitle subtitle="Manage what you sell and who can use the system.">Admin</PageTitle>
-      <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
+      <FinancePanel />
+      <div className="mt-6 grid gap-6 lg:grid-cols-2 lg:items-start">
         <div className="space-y-6">
           <ServicesPanel />
+          <RecurringBillsPanel />
           <ExpensePresetsPanel />
         </div>
         <div className="space-y-6">
@@ -36,6 +39,224 @@ export default function AdminPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+function FinancePanel() {
+  const [range, setRange] = useState<DateRange>({ preset: "month", from: "", to: "" });
+  const [data, setData] = useState<Analytics | null>(null);
+  const [previous, setPrevious] = useState<Analytics | null>(null);
+  const [error, setError] = useState("");
+
+  const incompleteCustom = range.preset === "custom" && (!range.from || !range.to);
+
+  useEffect(() => {
+    if (incompleteCustom) return;
+    let active = true;
+    const bounds = rangeBounds(range);
+    const before = previousBounds(bounds);
+    const timeZone = browserTimeZone();
+    Promise.all([
+      supabase.rpc("analytics", { p_from: bounds.from, p_to: bounds.to, p_tz: timeZone }),
+      supabase.rpc("analytics", { p_from: before.from, p_to: before.to, p_tz: timeZone }),
+    ]).then(([current, prior]) => {
+      if (!active) return;
+      if (current.error) setError(current.error.message);
+      else {
+        setError("");
+        setData(current.data as Analytics);
+        setPrevious((prior.data as Analytics | null) ?? null);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [range, incompleteCustom]);
+
+  return (
+    <div className="space-y-3">
+      <RangePicker value={range} onChange={setRange} />
+      {error && <ErrorNote>{error}</ErrorNote>}
+      {data && <FinanceSummary data={data} previous={previous} />}
+    </div>
+  );
+}
+
+function RecurringBillsPanel() {
+  const [bills, setBills] = useState<ExpensePreset[] | null>(null);
+  const [name, setName] = useState("");
+  const [amount, setAmount] = useState("");
+  const [frequency, setFrequency] = useState<BillFrequency>("monthly");
+  const [nextDue, setNextDue] = useState(() => localDay());
+  const [editing, setEditing] = useState<ExpensePreset | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [version, setVersion] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    supabase
+      .from("expense_presets")
+      .select("id, name, default_amount, frequency, next_due_on")
+      .not("frequency", "is", null)
+      .order("next_due_on")
+      .then(({ data, error: loadError }) => {
+        if (!active) return;
+        if (loadError) setError(loadError.message);
+        else setBills(data as ExpensePreset[]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [version]);
+
+  function clearForm() {
+    setEditing(null);
+    setName("");
+    setAmount("");
+    setFrequency("monthly");
+    setNextDue(localDay());
+  }
+
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    const cost = Number(amount);
+    if (!name.trim()) return setError("Enter a bill name.");
+    if (amount === "" || !Number.isFinite(cost) || cost < 0) return setError("Enter a valid amount.");
+    if (!nextDue) return setError("Choose the next due date.");
+
+    setBusy(true);
+    setError("");
+    const values = { name: name.trim(), default_amount: cost, frequency, next_due_on: nextDue };
+    const { error: saveError } = editing
+      ? await supabase.from("expense_presets").update(values).eq("id", editing.id)
+      : await supabase.from("expense_presets").insert(values);
+    setBusy(false);
+    if (saveError) return setError(saveError.message);
+    clearForm();
+    setVersion((v) => v + 1);
+  }
+
+  async function remove(bill: ExpensePreset) {
+    if (!window.confirm(`Remove ${bill.name}? Payments already recorded stay in your expenses.`)) return;
+    setError("");
+    const { error: deleteError } = await supabase.from("expense_presets").delete().eq("id", bill.id);
+    if (deleteError) return setError(deleteError.message);
+    if (editing?.id === bill.id) clearForm();
+    setVersion((v) => v + 1);
+  }
+
+  return (
+    <section className="card p-4">
+      <h2 className="flex items-center gap-2 text-lg font-bold"><Icon name="bill" />Recurring bills</h2>
+      <p className="mt-0.5 text-sm text-muted">Water, rent and other repeating costs. Tap a chip to edit it. They are paid from the Expenses page.</p>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        {bills === null && !error && <p className="text-sm text-muted">Loading…</p>}
+        {bills?.length === 0 && <p className="text-sm text-muted">No recurring bills yet. Add your first one below.</p>}
+        {bills?.map((bill) => (
+          <span
+            key={bill.id}
+            className={`inline-flex min-h-11 items-center rounded-full border bg-surface ${
+              editing?.id === bill.id ? "border-navy ring-1 ring-navy" : "border-[#c3ccd9]"
+            }`}
+          >
+            <button
+              type="button"
+              className="min-h-11 cursor-pointer rounded-l-full py-1 pl-4 pr-2 text-left"
+              onClick={() => {
+                setEditing(bill);
+                setName(bill.name);
+                setAmount(String(bill.default_amount));
+                setFrequency(bill.frequency as BillFrequency);
+                setNextDue(bill.next_due_on as string);
+                setError("");
+              }}
+            >
+              <span className="flex items-center gap-2 text-[15px] font-medium">
+                {bill.name}
+                <span className="money text-sm font-semibold text-brand">{money(bill.default_amount)}</span>
+              </span>
+              <span className="block text-xs text-muted">
+                {frequencyLabels[bill.frequency as BillFrequency]} · next {shortDay(bill.next_due_on as string)}
+              </span>
+            </button>
+            <button
+              type="button"
+              aria-label={`Remove ${bill.name}`}
+              className="flex size-11 cursor-pointer items-center justify-center rounded-r-full text-muted hover:text-danger"
+              onClick={() => remove(bill)}
+            >
+              <Icon name="remove" size={17} />
+            </button>
+          </span>
+        ))}
+      </div>
+
+      <form onSubmit={save} className="mt-4 border-t border-line pt-4">
+        <h3 className="mb-2 text-sm font-bold">{editing ? `Edit ${editing.name}` : "Add a recurring bill"}</h3>
+        <div className="grid grid-cols-2 gap-2">
+          <div className="col-span-2">
+            <label className="label" htmlFor="bill-name">Bill</label>
+            <input
+              id="bill-name"
+              className="field"
+              placeholder="e.g. Water bill"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="label" htmlFor="bill-cost">Amount</label>
+            <input
+              id="bill-cost"
+              className="field money"
+              type="number"
+              inputMode="decimal"
+              min="0"
+              step="any"
+              placeholder="0"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="label" htmlFor="bill-frequency">Repeats</label>
+            <select
+              id="bill-frequency"
+              className="field"
+              value={frequency}
+              onChange={(e) => setFrequency(e.target.value as BillFrequency)}
+            >
+              {Object.entries(frequencyLabels).map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="col-span-2">
+            <label className="label" htmlFor="bill-due">Next due date</label>
+            <input
+              id="bill-due"
+              className="field"
+              type="date"
+              value={nextDue}
+              onChange={(e) => setNextDue(e.target.value)}
+            />
+          </div>
+        </div>
+        <div className="mt-3 flex gap-2">
+          {editing && (
+            <button type="button" className="btn btn-quiet flex-1" onClick={clearForm}>Cancel</button>
+          )}
+          <button className="btn btn-primary flex-1" disabled={busy}>
+            <Icon name={editing ? "check" : "plus"} size={18} />
+            {editing ? "Save bill" : "Add bill"}
+          </button>
+        </div>
+      </form>
+
+      {error && <div className="mt-3"><ErrorNote>{error}</ErrorNote></div>}
+    </section>
   );
 }
 
@@ -213,7 +434,8 @@ function ExpensePresetsPanel() {
     let active = true;
     supabase
       .from("expense_presets")
-      .select("id, name, default_amount")
+      .select("id, name, default_amount, frequency, next_due_on")
+      .is("frequency", null)
       .order("name")
       .then(({ data, error: loadError }) => {
         if (!active) return;

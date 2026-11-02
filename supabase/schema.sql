@@ -111,6 +111,19 @@ create table if not exists public.expenses (
   created_at timestamptz not null default now()
 );
 
+-- A preset with a frequency is a recurring bill, such as rent or water.
+alter table public.expense_presets add column if not exists frequency text;
+alter table public.expense_presets add column if not exists next_due_on date;
+alter table public.expense_presets drop constraint if exists expense_presets_frequency_check;
+alter table public.expense_presets add constraint expense_presets_frequency_check
+  check (frequency in ('daily', 'weekly', 'monthly', 'yearly'));
+alter table public.expense_presets drop constraint if exists expense_presets_due_check;
+alter table public.expense_presets add constraint expense_presets_due_check
+  check ((frequency is null) = (next_due_on is null));
+
+-- The due date this expense paid, when it came from a recurring bill.
+alter table public.expenses add column if not exists due_on date;
+
 create index if not exists expenses_created_at_idx on public.expenses (created_at desc);
 create index if not exists sales_created_at_idx on public.sales (created_at desc);
 create index if not exists sales_client_idx on public.sales (client_id, created_at);
@@ -508,6 +521,44 @@ begin
 end;
 $$;
 
+-- Records a bill as an expense and moves it to its next due date. p_due_on is the
+-- date the payer saw, so a second tap or a second person cannot pay it twice.
+create or replace function public.pay_recurring_bill(p_preset_id uuid, p_due_on date, p_amount numeric, p_note text default null)
+returns date language plpgsql security definer set search_path = '' as $$
+declare
+  v_bill public.expense_presets;
+  v_next date;
+begin
+  if not public.is_member() then
+    raise exception 'Please log in again.';
+  end if;
+  if p_amount is null or p_amount <= 0 then
+    raise exception 'Enter an amount greater than zero.';
+  end if;
+
+  select * into v_bill from public.expense_presets where id = p_preset_id for update;
+  if not found or v_bill.frequency is null then
+    raise exception 'Bill not found.';
+  end if;
+  if v_bill.next_due_on is distinct from p_due_on then
+    raise exception 'This bill has already been paid. Refresh and check the next due date.';
+  end if;
+
+  v_next := case v_bill.frequency
+    when 'daily' then p_due_on + 1
+    when 'weekly' then p_due_on + 7
+    when 'monthly' then (p_due_on + interval '1 month')::date
+    else (p_due_on + interval '1 year')::date
+  end;
+
+  insert into public.expenses (preset_id, name, amount, note, due_on, created_by)
+  values (v_bill.id, v_bill.name, round(p_amount, 2), nullif(trim(coalesce(p_note, '')), ''), p_due_on, auth.uid());
+
+  update public.expense_presets set next_due_on = v_next where id = v_bill.id;
+  return v_next;
+end;
+$$;
+
 -- ---------------------------------------------------------------------------
 -- Reading
 -- ---------------------------------------------------------------------------
@@ -610,6 +661,10 @@ returns jsonb language sql stable security invoker set search_path = '' as $$
     'credit_given', (select coalesce(sum(balance), 0) from public.sales where created_at >= p_from and created_at < p_to),
     'outstanding', (select coalesce(sum(balance), 0) from public.sales),
     'expenses_total', (select coalesce(sum(amount), 0) from public.expenses where created_at >= p_from and created_at < p_to),
+    'all_time_balance', (
+      (select coalesce(sum(amount), 0) from public.payments)
+      - (select coalesce(sum(amount), 0) from public.expenses)
+    ),
     'by_method', (
       select jsonb_build_object(
         'cash', coalesce(sum(amount) filter (where method = 'cash'), 0),
@@ -763,6 +818,7 @@ grant execute on function public.is_admin() to authenticated;
 grant execute on function public.allow_email(text) to authenticated;
 grant execute on function public.set_user_role(uuid, text) to authenticated;
 grant execute on function public.update_my_username(text) to authenticated;
+grant execute on function public.pay_recurring_bill(uuid, date, numeric, text) to authenticated;
 grant execute on function public.clear_sales(text) to authenticated;
 grant execute on function public.clear_expenses(text) to authenticated;
 grant execute on function public.update_client(uuid, text, text, text) to authenticated;

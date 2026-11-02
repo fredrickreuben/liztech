@@ -9,6 +9,29 @@ export function money(value: number) {
   return `${currency} ${amount.format(value)}`;
 }
 
+export const frequencyLabels = {
+  daily: "Daily",
+  weekly: "Weekly",
+  monthly: "Monthly",
+  yearly: "Yearly",
+} as const;
+
+// The device's local date as yyyy-mm-dd, the format of due dates.
+export function localDay(date = new Date()) {
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+// Whole days from today to a yyyy-mm-dd date. Negative means it has passed.
+export function daysUntil(day: string, today: string) {
+  const toUtc = (text: string) => {
+    const [year, month, date] = text.split("-").map(Number);
+    return Date.UTC(year, month - 1, date);
+  };
+  return Math.round((toUtc(day) - toUtc(today)) / 86400000);
+}
+
 export function methodLabel(method: string | null) {
   if (method === "cash") return "Cash";
   if (method === "mpesa") return "M-PESA";

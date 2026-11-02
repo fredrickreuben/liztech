@@ -56,10 +56,14 @@ export type SalesSearchResult = {
   rows: SaleRow[];
 };
 
+export type BillFrequency = "daily" | "weekly" | "monthly" | "yearly";
+
 export type ExpensePreset = {
   id: string;
   name: string;
   default_amount: number;
+  frequency: BillFrequency | null;
+  next_due_on: string | null;
 };
 
 export type ExpenseRow = {
@@ -67,6 +71,7 @@ export type ExpenseRow = {
   name: string;
   amount: number;
   note: string | null;
+  due_on: string | null;
   created_at: string;
   staff: { username: string } | null;
 };
@@ -78,6 +83,7 @@ export type Analytics = {
   credit_given: number;
   outstanding: number;
   expenses_total: number;
+  all_time_balance: number;
   by_method: { cash: number; mpesa: number; unspecified: number };
   by_day: { day: string; sales: number; collected: number }[];
   top_services: { name: string; quantity: number; revenue: number }[];

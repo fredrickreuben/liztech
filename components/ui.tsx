@@ -9,6 +9,7 @@ import {
   ChartColumn,
   Check,
   ChevronDown,
+  CalendarClock,
   CircleAlert,
   Clock,
   HandCoins,
@@ -19,8 +20,10 @@ import {
   Minus,
   Pencil,
   Phone,
+  PiggyBank,
   Plus,
   ReceiptText,
+  Scale,
   Search,
   ShieldCheck,
   ShoppingCart,
@@ -75,6 +78,9 @@ const icons = {
   trash: Trash2,
   edit: Pencil,
   warning: TriangleAlert,
+  bill: CalendarClock,
+  profit: PiggyBank,
+  scale: Scale,
 };
 
 export type IconName = keyof typeof icons;
