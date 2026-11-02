@@ -1,0 +1,324 @@
+"use client";
+
+import Link from "next/link";
+import { useEffect, useState } from "react";
+import { useAuth } from "@/components/auth-provider";
+import { EmptyNote, ErrorNote, PageTitle } from "@/components/ui";
+import { money } from "@/lib/format";
+import { createSignupClient, supabase } from "@/lib/supabase";
+import type { Profile, Role, Service } from "@/lib/types";
+
+export default function AdminPage() {
+  const { profile } = useAuth();
+
+  if (profile?.role !== "admin") {
+    return (
+      <EmptyNote>
+        <p>Only admins can open this page.</p>
+        <Link href="/" className="btn btn-quiet btn-small mt-3">
+          Back to selling
+        </Link>
+      </EmptyNote>
+    );
+  }
+
+  return (
+    <div>
+      <PageTitle>Admin</PageTitle>
+      <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
+        <ServicesPanel />
+        <UsersPanel />
+      </div>
+    </div>
+  );
+}
+
+function ServicesPanel() {
+  const [services, setServices] = useState<Service[] | null>(null);
+  const [name, setName] = useState("");
+  const [price, setPrice] = useState("");
+  const [editing, setEditing] = useState<Service | null>(null);
+  const [editPrice, setEditPrice] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [version, setVersion] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    supabase
+      .from("services")
+      .select("id, name, price")
+      .order("name")
+      .then(({ data, error: loadError }) => {
+        if (!active) return;
+        if (loadError) setError(loadError.message);
+        else setServices(data as Service[]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [version]);
+
+  async function add(event: React.FormEvent) {
+    event.preventDefault();
+    const charge = Number(price);
+    if (!name.trim()) return setError("Enter a service name.");
+    if (price === "" || !Number.isFinite(charge) || charge < 0) return setError("Enter a valid charge.");
+
+    setBusy(true);
+    setError("");
+    const { error: insertError } = await supabase.from("services").insert({ name: name.trim(), price: charge });
+    setBusy(false);
+    if (insertError) return setError(insertError.message);
+    setName("");
+    setPrice("");
+    setVersion((v) => v + 1);
+  }
+
+  async function remove(service: Service) {
+    if (!window.confirm(`Remove ${service.name}? Past sales keep their record of it.`)) return;
+    setError("");
+    const { error: deleteError } = await supabase.from("services").delete().eq("id", service.id);
+    if (deleteError) return setError(deleteError.message);
+    if (editing?.id === service.id) setEditing(null);
+    setVersion((v) => v + 1);
+  }
+
+  async function saveCharge(event: React.FormEvent) {
+    event.preventDefault();
+    if (!editing) return;
+    const charge = Number(editPrice);
+    if (editPrice === "" || !Number.isFinite(charge) || charge < 0) return setError("Enter a valid charge.");
+    setBusy(true);
+    setError("");
+    const { error: updateError } = await supabase.from("services").update({ price: charge }).eq("id", editing.id);
+    setBusy(false);
+    if (updateError) return setError(updateError.message);
+    setEditing(null);
+    setVersion((v) => v + 1);
+  }
+
+  return (
+    <section className="card p-4">
+      <h2 className="text-lg font-bold">Services and charges</h2>
+      <p className="mt-0.5 text-sm text-muted">Tap a chip to change its charge. Tap × to remove it.</p>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        {services === null && !error && <p className="text-sm text-muted">Loading…</p>}
+        {services?.length === 0 && <p className="text-sm text-muted">No services yet. Add your first one below.</p>}
+        {services?.map((service) => (
+          <span
+            key={service.id}
+            className={`inline-flex min-h-11 items-center rounded-full border bg-surface ${
+              editing?.id === service.id ? "border-brand" : "border-[#c6cbbf]"
+            }`}
+          >
+            <button
+              type="button"
+              className="flex min-h-11 cursor-pointer items-center gap-2 rounded-l-full pl-4 pr-2 text-left text-[15px] font-medium"
+              onClick={() => {
+                setEditing(service);
+                setEditPrice(String(service.price));
+                setError("");
+              }}
+            >
+              {service.name}
+              <span className="money text-sm font-semibold text-brand">{money(service.price)}</span>
+            </button>
+            <button
+              type="button"
+              aria-label={`Remove ${service.name}`}
+              className="flex size-11 cursor-pointer items-center justify-center rounded-r-full text-lg text-muted hover:text-danger"
+              onClick={() => remove(service)}
+            >
+              ×
+            </button>
+          </span>
+        ))}
+      </div>
+
+      {editing && (
+        <form onSubmit={saveCharge} className="mt-4 rounded-lg bg-paper p-3">
+          <label className="label" htmlFor="edit-charge">Charge for {editing.name}</label>
+          <div className="flex gap-2">
+            <input
+              id="edit-charge"
+              className="field money min-w-0 flex-1"
+              type="number"
+              inputMode="decimal"
+              min="0"
+              step="any"
+              value={editPrice}
+              onChange={(e) => setEditPrice(e.target.value)}
+              autoFocus
+            />
+            <button className="btn btn-primary" disabled={busy}>Save</button>
+            <button type="button" className="btn btn-quiet" onClick={() => setEditing(null)}>Cancel</button>
+          </div>
+        </form>
+      )}
+
+      <form onSubmit={add} className="mt-4 border-t border-line pt-4">
+        <h3 className="mb-2 text-sm font-bold">Add a service</h3>
+        <div className="grid grid-cols-[minmax(0,1fr)_110px] gap-2">
+          <div>
+            <label className="label" htmlFor="service-name">Service</label>
+            <input
+              id="service-name"
+              className="field"
+              placeholder="e.g. Printing"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="label" htmlFor="service-charge">Charge</label>
+            <input
+              id="service-charge"
+              className="field money"
+              type="number"
+              inputMode="decimal"
+              min="0"
+              step="any"
+              placeholder="0"
+              value={price}
+              onChange={(e) => setPrice(e.target.value)}
+            />
+          </div>
+        </div>
+        <button className="btn btn-primary mt-3 w-full" disabled={busy}>Add service</button>
+      </form>
+
+      {error && <div className="mt-3"><ErrorNote>{error}</ErrorNote></div>}
+    </section>
+  );
+}
+
+function UsersPanel() {
+  const { profile, refreshProfile } = useAuth();
+  const [users, setUsers] = useState<Profile[] | null>(null);
+  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [version, setVersion] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    supabase
+      .from("profiles")
+      .select("id, email, username, role")
+      .order("username")
+      .then(({ data, error: loadError }) => {
+        if (!active) return;
+        if (loadError) setError(loadError.message);
+        else setUsers(data as Profile[]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [version]);
+
+  async function changeRole(user: Profile, role: Role) {
+    if (user.id === profile?.id && !window.confirm("Remove your own admin access?")) return;
+    setError("");
+    setNotice("");
+    const { error: rpcError } = await supabase.rpc("set_user_role", { p_user_id: user.id, p_role: role });
+    if (rpcError) return setError(rpcError.message);
+    setVersion((v) => v + 1);
+    if (user.id === profile?.id) refreshProfile();
+  }
+
+  async function addUser(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    setNotice("");
+
+    const cleanEmail = email.trim().toLowerCase();
+    const { error: allowError } = await supabase.rpc("allow_email", { p_email: cleanEmail });
+    if (allowError) {
+      setBusy(false);
+      return setError(allowError.message);
+    }
+
+    const { data, error: signUpError } = await createSignupClient().auth.signUp({
+      email: cleanEmail,
+      password,
+      options: { data: { username: username.trim() } },
+    });
+    setBusy(false);
+
+    if (signUpError) return setError(signUpError.message);
+    if (!data.session) {
+      // With "Confirm email" on, Supabase returns no session and the account cannot log in yet.
+      setNotice(`${username.trim()} was created, but they must confirm their email before logging in.`);
+    } else {
+      setNotice(`${username.trim()} can now log in as staff.`);
+    }
+    setUsername("");
+    setEmail("");
+    setPassword("");
+    setVersion((v) => v + 1);
+  }
+
+  return (
+    <section className="card p-4">
+      <h2 className="text-lg font-bold">Users</h2>
+
+      <ul className="mt-2 divide-y divide-line">
+        {users === null && !error && <li className="py-2 text-sm text-muted">Loading…</li>}
+        {users?.map((user) => (
+          <li key={user.id} className="flex items-center justify-between gap-3 py-2.5">
+            <div className="min-w-0">
+              <div className="truncate font-semibold">
+                {user.username}
+                {user.id === profile?.id && <span className="font-normal text-muted"> (you)</span>}
+              </div>
+              <div className="truncate text-sm text-muted">
+                {user.email} · {user.role === "admin" ? "Admin" : "Staff"}
+              </div>
+            </div>
+            {user.role === "admin" ? (
+              <button className="btn btn-quiet btn-small shrink-0" onClick={() => changeRole(user, "staff")}>
+                Make staff
+              </button>
+            ) : (
+              <button className="btn btn-quiet btn-small shrink-0" onClick={() => changeRole(user, "admin")}>
+                Make admin
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+
+      <form onSubmit={addUser} className="mt-4 space-y-3 border-t border-line pt-4">
+        <h3 className="text-sm font-bold">Add a user</h3>
+        <div>
+          <label className="label" htmlFor="new-username">Username</label>
+          <input id="new-username" className="field" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="off" required />
+        </div>
+        <div>
+          <label className="label" htmlFor="new-email">Email</label>
+          <input id="new-email" type="email" className="field" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="off" required />
+        </div>
+        <div>
+          <label className="label" htmlFor="new-password">Password</label>
+          <input id="new-password" type="password" className="field" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" minLength={6} required />
+        </div>
+        <button className="btn btn-primary w-full" disabled={busy}>
+          {busy ? "Adding…" : "Add user"}
+        </button>
+      </form>
+
+      {error && <div className="mt-3"><ErrorNote>{error}</ErrorNote></div>}
+      {notice && (
+        <p className="mt-3 rounded-lg bg-brand-soft p-3 text-sm text-brand-dark" role="status">
+          {notice}
+        </p>
+      )}
+    </section>
+  );
+}

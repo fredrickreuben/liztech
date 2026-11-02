@@ -1,0 +1,135 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-paper: #f3f4ef;
+  --color-surface: #ffffff;
+  --color-ink: #13211c;
+  --color-muted: #5c6b65;
+  --color-line: #dfe2d9;
+  --color-brand: #0d6b5f;
+  --color-brand-dark: #0a5148;
+  --color-brand-soft: #dff1ec;
+  --color-credit: #b45309;
+  --color-credit-dark: #92400e;
+  --color-credit-soft: #fdf0d8;
+  --color-danger: #b42318;
+  --color-danger-soft: #fdeceb;
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans), Arial, sans-serif;
+}
+
+.money {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: 14px;
+}
+
+/* 16px stops iOS Safari zooming the page when a field gets focus. */
+.field {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 12px;
+  font-size: 16px;
+  background: var(--color-surface);
+  border: 1px solid #c6cbbf;
+  border-radius: 10px;
+  color: var(--color-ink);
+}
+
+.field::placeholder {
+  color: #7d8a84;
+}
+
+.field[aria-invalid="true"] {
+  border-color: var(--color-danger);
+}
+
+.label {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 46px;
+  padding: 0 16px;
+  font-size: 15px;
+  font-weight: 600;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background-color 120ms, border-color 120ms;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--color-brand);
+  color: #fff;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--color-brand-dark);
+}
+
+.btn-credit {
+  background: var(--color-credit);
+  color: #fff;
+}
+
+.btn-credit:hover:not(:disabled) {
+  background: var(--color-credit-dark);
+}
+
+.btn-quiet {
+  background: var(--color-surface);
+  border-color: #c6cbbf;
+  color: var(--color-ink);
+}
+
+.btn-quiet:hover:not(:disabled) {
+  background: var(--color-paper);
+}
+
+.btn-small {
+  min-height: 38px;
+  padding: 0 12px;
+  font-size: 14px;
+}
+
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}
