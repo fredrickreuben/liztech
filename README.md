@@ -2,7 +2,7 @@
 
 A simple point of sale for a cybercafe. It tracks daily sales and client credit, and works on a phone or a computer.
 
-Built with Next.js, Tailwind CSS and Supabase.
+Built with Next.js, Tailwind CSS, Lucide icons and Supabase.
 
 ## What it does
 

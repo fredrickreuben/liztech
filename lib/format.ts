@@ -48,6 +48,23 @@ function parseDay(day: string) {
   return new Date(year, month - 1, date);
 }
 
+export function timeOnly(iso: string) {
+  return new Date(iso).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+// The equal-length period directly before the given bounds, for comparisons.
+export function previousBounds(bounds: { from: string; to: string }) {
+  const start = new Date(bounds.from).getTime();
+  const end = new Date(bounds.to).getTime();
+  return { from: new Date(start - (end - start)).toISOString(), to: bounds.from };
+}
+
+// Percentage change, or null when there is nothing to compare against.
+export function percentChange(current: number, previous: number) {
+  if (previous <= 0) return null;
+  return ((current - previous) / previous) * 100;
+}
+
 // Turns a range into the half-open [from, to) instants the database expects,
 // using the device's local day boundaries.
 export function rangeBounds(range: DateRange) {

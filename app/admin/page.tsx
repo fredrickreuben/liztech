@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
-import { EmptyNote, ErrorNote, PageTitle } from "@/components/ui";
+import { Avatar, EmptyNote, ErrorNote, Icon, PageTitle } from "@/components/ui";
 import { money } from "@/lib/format";
 import { createSignupClient, supabase } from "@/lib/supabase";
 import type { Profile, Role, Service } from "@/lib/types";
@@ -24,7 +24,7 @@ export default function AdminPage() {
 
   return (
     <div>
-      <PageTitle>Admin</PageTitle>
+      <PageTitle subtitle="Manage what you sell and who can use the system.">Admin</PageTitle>
       <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
         <ServicesPanel />
         <UsersPanel />
@@ -100,7 +100,7 @@ function ServicesPanel() {
 
   return (
     <section className="card p-4">
-      <h2 className="text-lg font-bold">Services and charges</h2>
+      <h2 className="flex items-center gap-2 text-lg font-bold"><Icon name="services" />Services and charges</h2>
       <p className="mt-0.5 text-sm text-muted">Tap a chip to change its charge. Tap × to remove it.</p>
 
       <div className="mt-3 flex flex-wrap gap-2">
@@ -110,7 +110,7 @@ function ServicesPanel() {
           <span
             key={service.id}
             className={`inline-flex min-h-11 items-center rounded-full border bg-surface ${
-              editing?.id === service.id ? "border-brand" : "border-[#c6cbbf]"
+              editing?.id === service.id ? "border-navy ring-1 ring-navy" : "border-[#c3ccd9]"
             }`}
           >
             <button
@@ -131,7 +131,7 @@ function ServicesPanel() {
               className="flex size-11 cursor-pointer items-center justify-center rounded-r-full text-lg text-muted hover:text-danger"
               onClick={() => remove(service)}
             >
-              ×
+              <Icon name="remove" size={17} />
             </button>
           </span>
         ))}
@@ -186,7 +186,7 @@ function ServicesPanel() {
             />
           </div>
         </div>
-        <button className="btn btn-primary mt-3 w-full" disabled={busy}>Add service</button>
+        <button className="btn btn-primary mt-3 w-full" disabled={busy}><Icon name="plus" size={18} />Add service</button>
       </form>
 
       {error && <div className="mt-3"><ErrorNote>{error}</ErrorNote></div>}
@@ -266,20 +266,24 @@ function UsersPanel() {
 
   return (
     <section className="card p-4">
-      <h2 className="text-lg font-bold">Users</h2>
+      <h2 className="flex items-center gap-2 text-lg font-bold"><Icon name="clients" />Users</h2>
 
       <ul className="mt-2 divide-y divide-line">
         {users === null && !error && <li className="py-2 text-sm text-muted">Loading…</li>}
         {users?.map((user) => (
           <li key={user.id} className="flex items-center justify-between gap-3 py-2.5">
-            <div className="min-w-0">
-              <div className="truncate font-semibold">
-                {user.username}
-                {user.id === profile?.id && <span className="font-normal text-muted"> (you)</span>}
+            <Avatar name={user.username} />
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-x-2">
+                <span className="truncate font-semibold">
+                  {user.username}
+                  {user.id === profile?.id && <span className="font-normal text-muted"> (you)</span>}
+                </span>
+                <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${user.role === "admin" ? "bg-navy text-white" : "bg-navy-soft text-navy"}`}>
+                  {user.role === "admin" ? "Admin" : "Staff"}
+                </span>
               </div>
-              <div className="truncate text-sm text-muted">
-                {user.email} · {user.role === "admin" ? "Admin" : "Staff"}
-              </div>
+              <div className="truncate text-sm text-muted">{user.email}</div>
             </div>
             {user.role === "admin" ? (
               <button className="btn btn-quiet btn-small shrink-0" onClick={() => changeRole(user, "staff")}>
@@ -309,7 +313,7 @@ function UsersPanel() {
           <input id="new-password" type="password" className="field" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" minLength={6} required />
         </div>
         <button className="btn btn-primary w-full" disabled={busy}>
-          {busy ? "Adding…" : "Add user"}
+          <Icon name="addUser" size={18} />{busy ? "Adding…" : "Add user"}
         </button>
       </form>
 

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useAuth } from "@/components/auth-provider";
-import { ErrorNote, PageTitle } from "@/components/ui";
+import { ErrorNote, Icon, PageTitle } from "@/components/ui";
 import { createSignupClient, supabase } from "@/lib/supabase";
 
 function Saved({ children }: { children: React.ReactNode }) {
@@ -71,10 +71,10 @@ export default function AccountPage() {
 
   return (
     <div>
-      <PageTitle>Account</PageTitle>
+      <PageTitle subtitle="Change your username and password.">Account</PageTitle>
       <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
         <form onSubmit={saveUsername} className="card space-y-3 p-4">
-          <h2 className="text-lg font-bold">Username</h2>
+          <h2 className="flex items-center gap-2 text-lg font-bold"><Icon name="user" />Username</h2>
           <p className="text-sm text-muted">Logged in as {profile?.email}</p>
           <div>
             <label className="label" htmlFor="account-username">Username</label>
@@ -95,7 +95,7 @@ export default function AccountPage() {
         </form>
 
         <form onSubmit={savePassword} className="card space-y-3 p-4">
-          <h2 className="text-lg font-bold">Password</h2>
+          <h2 className="flex items-center gap-2 text-lg font-bold"><Icon name="key" />Password</h2>
           <div>
             <label className="label" htmlFor="current-password">Current password</label>
             <input
