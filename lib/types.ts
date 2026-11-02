@@ -1,5 +1,6 @@
 export type Role = "admin" | "staff";
 export type SaleStatus = "paid" | "partial" | "credit";
+export type PaymentMethod = "cash" | "mpesa";
 
 export type Profile = {
   id: string;
@@ -22,12 +23,14 @@ export type ClientBalance = {
   paid: number;
   balance: number;
   last_sale_at: string | null;
+  notes: string | null;
 };
 
 export type SaleItem = {
   name: string;
   quantity: number;
   unit_price: number;
+  list_price: number | null;
   line_total: number;
 };
 
@@ -53,12 +56,29 @@ export type SalesSearchResult = {
   rows: SaleRow[];
 };
 
+export type ExpensePreset = {
+  id: string;
+  name: string;
+  default_amount: number;
+};
+
+export type ExpenseRow = {
+  id: string;
+  name: string;
+  amount: number;
+  note: string | null;
+  created_at: string;
+  staff: { username: string } | null;
+};
+
 export type Analytics = {
   sales_total: number;
   sale_count: number;
   collected: number;
   credit_given: number;
   outstanding: number;
+  expenses_total: number;
+  by_method: { cash: number; mpesa: number; unspecified: number };
   by_day: { day: string; sales: number; collected: number }[];
   top_services: { name: string; quantity: number; revenue: number }[];
   by_staff: { username: string; sales: number; sale_count: number }[];

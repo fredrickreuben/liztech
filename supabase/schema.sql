@@ -1,6 +1,7 @@
 -- Liz Cyber Tech POS: database schema.
 -- Paste the whole file into Supabase > SQL Editor and click Run.
--- Safe to run again: nothing here deletes existing data.
+-- Safe to run again: this also upgrades an existing database, and nothing here
+-- deletes existing data.
 
 -- ---------------------------------------------------------------------------
 -- Tables
@@ -79,6 +80,38 @@ create table if not exists public.payments (
   created_at timestamptz not null default now()
 );
 
+-- Added after first release. Altering rather than editing the tables above lets
+-- this same script upgrade a database that already has data.
+alter table public.clients add column if not exists notes text;
+
+-- The service's normal price at sale time, kept so a discount stays visible.
+-- Empty on sales made before price overrides existed.
+alter table public.sale_items add column if not exists list_price numeric(12, 2);
+
+-- Empty on payments recorded before payment methods existed.
+alter table public.payments add column if not exists method text;
+alter table public.payments drop constraint if exists payments_method_check;
+alter table public.payments add constraint payments_method_check check (method in ('cash', 'mpesa'));
+
+create table if not exists public.expense_presets (
+  id uuid primary key default gen_random_uuid(),
+  name text not null check (length(trim(name)) > 0),
+  default_amount numeric(12, 2) not null check (default_amount >= 0),
+  created_at timestamptz not null default now()
+);
+
+-- Name is copied from the preset, so changing a preset never changes past entries.
+create table if not exists public.expenses (
+  id uuid primary key default gen_random_uuid(),
+  preset_id uuid references public.expense_presets (id) on delete set null,
+  name text not null check (length(trim(name)) > 0),
+  amount numeric(12, 2) not null check (amount > 0),
+  note text,
+  created_by uuid default auth.uid() references public.profiles (id) on delete set null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists expenses_created_at_idx on public.expenses (created_at desc);
 create index if not exists sales_created_at_idx on public.sales (created_at desc);
 create index if not exists sales_client_idx on public.sales (client_id, created_at);
 create index if not exists sales_open_idx on public.sales (client_id) where status <> 'paid';
@@ -207,15 +240,143 @@ begin
 end;
 $$;
 
+create or replace function public.clear_sales(p_confirm text)
+returns integer language plpgsql security definer set search_path = '' as $$
+declare
+  v_count integer;
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can clear sales.';
+  end if;
+  if p_confirm is distinct from 'DELETE' then
+    raise exception 'Confirmation text did not match.';
+  end if;
+  -- Items and payments go with their sale. Clients stay, with nothing owed.
+  delete from public.sales where true;
+  get diagnostics v_count = row_count;
+  return v_count;
+end;
+$$;
+
+create or replace function public.clear_expenses(p_confirm text)
+returns integer language plpgsql security definer set search_path = '' as $$
+declare
+  v_count integer;
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can clear expenses.';
+  end if;
+  if p_confirm is distinct from 'DELETE' then
+    raise exception 'Confirmation text did not match.';
+  end if;
+  delete from public.expenses where true;
+  get diagnostics v_count = row_count;
+  return v_count;
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- Clients
+-- ---------------------------------------------------------------------------
+
+create or replace function public.update_client(p_client_id uuid, p_name text, p_phone text, p_notes text default null)
+returns void language plpgsql security definer set search_path = '' as $$
+declare
+  v_name text := nullif(trim(coalesce(p_name, '')), '');
+  v_phone text := nullif(regexp_replace(coalesce(p_phone, ''), '[^0-9+]', '', 'g'), '');
+  v_found boolean;
+begin
+  if not public.is_member() then
+    raise exception 'Please log in again.';
+  end if;
+  if v_name is null or v_phone is null then
+    raise exception 'Name and phone are required.';
+  end if;
+
+  begin
+    update public.clients
+    set name = v_name, phone = v_phone, notes = nullif(trim(coalesce(p_notes, '')), '')
+    where id = p_client_id;
+    v_found := found;
+  exception when unique_violation then
+    raise exception 'Another client already has this phone number.';
+  end;
+  if not v_found then
+    raise exception 'Client not found.';
+  end if;
+
+  -- Sales show the name saved on them, so corrections have to reach them too.
+  update public.sales
+  set customer_name = v_name, customer_phone = v_phone
+  where client_id = p_client_id;
+end;
+$$;
+
+-- Past sales stay in the totals, kept under the name saved on them. A client who
+-- still owes cannot be removed, or that debt could never be collected.
+create or replace function public.delete_client(p_client_id uuid)
+returns void language plpgsql security definer set search_path = '' as $$
+declare
+  v_owed numeric(12, 2);
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can delete clients.';
+  end if;
+
+  perform 1 from public.clients where id = p_client_id for update;
+  if not found then
+    raise exception 'Client not found.';
+  end if;
+
+  select coalesce(sum(balance), 0) into v_owed from public.sales where client_id = p_client_id;
+  if v_owed > 0 then
+    raise exception 'This client still owes %. Record a payment or delete those sales first.', v_owed;
+  end if;
+
+  update public.payments set client_id = null where client_id = p_client_id;
+  update public.sales set client_id = null where client_id = p_client_id;
+  delete from public.clients where id = p_client_id;
+end;
+$$;
+
 -- ---------------------------------------------------------------------------
 -- Selling
 -- ---------------------------------------------------------------------------
 
--- Prices come from the services table, never from the browser.
--- p_items: [{"service_id": "...", "quantity": 2}, ...]
+-- Turns [{"method": "cash", "amount": 400}, ...] into checked rows. Zero amounts
+-- are dropped, so a split with one empty side still works.
+create or replace function public.clean_payments(p_payments jsonb)
+returns table (method text, amount numeric) language plpgsql immutable set search_path = '' as $$
+begin
+  if p_payments is null or p_payments = 'null'::jsonb then
+    return;
+  end if;
+  if jsonb_typeof(p_payments) <> 'array' then
+    raise exception 'Payments must be a list.';
+  end if;
+  if exists (
+    select 1 from jsonb_to_recordset(p_payments) as p (method text, amount numeric)
+    where p.amount is null or p.amount < 0 or p.method is null or p.method not in ('cash', 'mpesa')
+  ) then
+    raise exception 'Enter a valid payment method and amount.';
+  end if;
+  return query
+    select p.method, round(p.amount, 2)
+    from jsonb_to_recordset(p_payments) as p (method text, amount numeric)
+    where round(p.amount, 2) > 0;
+end;
+$$;
+
+-- Older versions of these two functions took a single paid amount.
+drop function if exists public.create_sale(jsonb, numeric, text, text, uuid);
+drop function if exists public.record_client_payment(uuid, numeric);
+
+-- The price defaults to the service's own, and the seller may override it.
+-- p_items: [{"service_id": "...", "quantity": 2, "unit_price": 50}, ...]
+-- p_payments: [{"method": "mpesa", "amount": 600}, {"method": "cash", "amount": 400}]
 create or replace function public.create_sale(
   p_items jsonb,
-  p_amount_paid numeric,
+  p_payments jsonb default '[]'::jsonb,
   p_customer_name text default null,
   p_phone text default null,
   p_client_id uuid default null
@@ -224,6 +385,7 @@ returns uuid language plpgsql security definer set search_path = '' as $$
 declare
   v_sale_id uuid := gen_random_uuid();
   v_total numeric(12, 2);
+  v_paid numeric(12, 2);
   v_name text := nullif(trim(coalesce(p_customer_name, '')), '');
   v_phone text := nullif(regexp_replace(coalesce(p_phone, ''), '[^0-9+]', '', 'g'), '');
   v_client_id uuid := p_client_id;
@@ -234,23 +396,28 @@ begin
   if p_items is null or jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then
     raise exception 'Select at least one service.';
   end if;
-  if p_amount_paid is null or p_amount_paid < 0 then
-    raise exception 'Enter a valid amount paid.';
-  end if;
   if exists (
     select 1
-    from jsonb_to_recordset(p_items) as i (service_id uuid, quantity integer)
+    from jsonb_to_recordset(p_items) as i (service_id uuid, quantity integer, unit_price numeric)
     left join public.services s on s.id = i.service_id
     where s.id is null or i.quantity is null or i.quantity <= 0
   ) then
     raise exception 'A selected service is no longer available. Refresh and try again.';
   end if;
+  if exists (
+    select 1 from jsonb_to_recordset(p_items) as i (service_id uuid, quantity integer, unit_price numeric)
+    where i.unit_price < 0
+  ) then
+    raise exception 'Enter a valid price.';
+  end if;
 
-  select coalesce(sum(s.price * i.quantity), 0) into v_total
-  from jsonb_to_recordset(p_items) as i (service_id uuid, quantity integer)
+  select coalesce(sum(round(coalesce(i.unit_price, s.price), 2) * i.quantity), 0) into v_total
+  from jsonb_to_recordset(p_items) as i (service_id uuid, quantity integer, unit_price numeric)
   join public.services s on s.id = i.service_id;
 
-  if p_amount_paid > v_total then
+  select coalesce(sum(p.amount), 0) into v_paid from public.clean_payments(p_payments) p;
+
+  if v_paid > v_total then
     raise exception 'Amount paid cannot be more than the total.';
   end if;
 
@@ -265,41 +432,44 @@ begin
     values (v_name, v_phone)
     on conflict (phone) do update set phone = excluded.phone
     returning id, name into v_client_id, v_name;
-  elsif p_amount_paid < v_total then
+  elsif v_paid < v_total then
     raise exception 'Name and phone are required for credit.';
   end if;
 
   insert into public.sales (id, client_id, customer_name, customer_phone, total, amount_paid, created_by)
-  values (v_sale_id, v_client_id, coalesce(v_name, 'Walk-in'), v_phone, v_total, p_amount_paid, auth.uid());
+  values (v_sale_id, v_client_id, coalesce(v_name, 'Walk-in'), v_phone, v_total, v_paid, auth.uid());
 
-  insert into public.sale_items (sale_id, service_id, name, unit_price, quantity)
-  select v_sale_id, s.id, s.name, s.price, i.quantity
-  from jsonb_to_recordset(p_items) as i (service_id uuid, quantity integer)
+  insert into public.sale_items (sale_id, service_id, name, unit_price, list_price, quantity)
+  select v_sale_id, s.id, s.name, round(coalesce(i.unit_price, s.price), 2), s.price, i.quantity
+  from jsonb_to_recordset(p_items) as i (service_id uuid, quantity integer, unit_price numeric)
   join public.services s on s.id = i.service_id;
 
-  if p_amount_paid > 0 then
-    insert into public.payments (sale_id, client_id, amount, created_by)
-    values (v_sale_id, v_client_id, p_amount_paid, auth.uid());
-  end if;
+  insert into public.payments (sale_id, client_id, amount, method, created_by)
+  select v_sale_id, v_client_id, p.amount, p.method, auth.uid()
+  from public.clean_payments(p_payments) p;
 
   return v_sale_id;
 end;
 $$;
 
--- Applies a payment to the client's oldest unpaid sales first.
+-- Applies each payment to the client's oldest unpaid sales first.
 -- Returns what the client still owes.
-create or replace function public.record_client_payment(p_client_id uuid, p_amount numeric)
+create or replace function public.record_client_payment(p_client_id uuid, p_payments jsonb)
 returns numeric language plpgsql security definer set search_path = '' as $$
 declare
   v_owed numeric(12, 2);
-  v_left numeric(12, 2) := p_amount;
+  v_amount numeric(12, 2);
+  v_left numeric(12, 2);
   v_apply numeric(12, 2);
+  v_payment record;
   v_sale record;
 begin
   if not public.is_member() then
     raise exception 'Please log in again.';
   end if;
-  if p_amount is null or p_amount <= 0 then
+
+  select coalesce(sum(p.amount), 0) into v_amount from public.clean_payments(p_payments) p;
+  if v_amount <= 0 then
     raise exception 'Enter an amount greater than zero.';
   end if;
 
@@ -313,25 +483,28 @@ begin
   select coalesce(sum(balance), 0) into v_owed
   from public.sales where client_id = p_client_id;
 
-  if p_amount > v_owed then
+  if v_amount > v_owed then
     raise exception 'Payment is more than the % owed.', v_owed;
   end if;
 
-  for v_sale in
-    select id, balance from public.sales
-    where client_id = p_client_id and balance > 0
-    order by created_at, id
-    for update
-  loop
-    exit when v_left <= 0;
-    v_apply := least(v_left, v_sale.balance);
-    update public.sales set amount_paid = amount_paid + v_apply where id = v_sale.id;
-    insert into public.payments (sale_id, client_id, amount, created_by)
-    values (v_sale.id, p_client_id, v_apply, auth.uid());
-    v_left := v_left - v_apply;
+  for v_payment in select * from public.clean_payments(p_payments) loop
+    v_left := v_payment.amount;
+    for v_sale in
+      select id, balance from public.sales
+      where client_id = p_client_id and balance > 0
+      order by created_at, id
+      for update
+    loop
+      exit when v_left <= 0;
+      v_apply := least(v_left, v_sale.balance);
+      update public.sales set amount_paid = amount_paid + v_apply where id = v_sale.id;
+      insert into public.payments (sale_id, client_id, amount, method, created_by)
+      values (v_sale.id, p_client_id, v_apply, v_payment.method, auth.uid());
+      v_left := v_left - v_apply;
+    end loop;
   end loop;
 
-  return v_owed - p_amount;
+  return v_owed - v_amount;
 end;
 $$;
 
@@ -347,7 +520,8 @@ select
   coalesce(s.billed, 0)::numeric(12, 2) as billed,
   coalesce(s.paid, 0)::numeric(12, 2) as paid,
   coalesce(s.balance, 0)::numeric(12, 2) as balance,
-  s.last_sale_at
+  s.last_sale_at,
+  c.notes
 from public.clients c
 left join lateral (
   select
@@ -413,6 +587,7 @@ returns jsonb language sql stable security invoker set search_path = '' as $$
               'name', i.name,
               'quantity', i.quantity,
               'unit_price', i.unit_price,
+              'list_price', i.list_price,
               'line_total', i.line_total
             ) order by i.name)
             from public.sale_items i where i.sale_id = p.id
@@ -434,6 +609,15 @@ returns jsonb language sql stable security invoker set search_path = '' as $$
     'collected', (select coalesce(sum(amount), 0) from public.payments where created_at >= p_from and created_at < p_to),
     'credit_given', (select coalesce(sum(balance), 0) from public.sales where created_at >= p_from and created_at < p_to),
     'outstanding', (select coalesce(sum(balance), 0) from public.sales),
+    'expenses_total', (select coalesce(sum(amount), 0) from public.expenses where created_at >= p_from and created_at < p_to),
+    'by_method', (
+      select jsonb_build_object(
+        'cash', coalesce(sum(amount) filter (where method = 'cash'), 0),
+        'mpesa', coalesce(sum(amount) filter (where method = 'mpesa'), 0),
+        'unspecified', coalesce(sum(amount) filter (where method is null), 0)
+      )
+      from public.payments where created_at >= p_from and created_at < p_to
+    ),
     'by_day', (
       select coalesce(jsonb_agg(jsonb_build_object(
         'day', d.day,
@@ -494,6 +678,8 @@ alter table public.clients enable row level security;
 alter table public.sales enable row level security;
 alter table public.sale_items enable row level security;
 alter table public.payments enable row level security;
+alter table public.expense_presets enable row level security;
+alter table public.expenses enable row level security;
 
 drop policy if exists "members read profiles" on public.profiles;
 create policy "members read profiles" on public.profiles
@@ -531,10 +717,44 @@ drop policy if exists "members read payments" on public.payments;
 create policy "members read payments" on public.payments
   for select to authenticated using (public.is_member());
 
+drop policy if exists "admins delete sales" on public.sales;
+create policy "admins delete sales" on public.sales
+  for delete to authenticated using (public.is_admin());
+
+drop policy if exists "members read expense presets" on public.expense_presets;
+create policy "members read expense presets" on public.expense_presets
+  for select to authenticated using (public.is_member());
+
+drop policy if exists "admins add expense presets" on public.expense_presets;
+create policy "admins add expense presets" on public.expense_presets
+  for insert to authenticated with check (public.is_admin());
+
+drop policy if exists "admins edit expense presets" on public.expense_presets;
+create policy "admins edit expense presets" on public.expense_presets
+  for update to authenticated using (public.is_admin()) with check (public.is_admin());
+
+drop policy if exists "admins remove expense presets" on public.expense_presets;
+create policy "admins remove expense presets" on public.expense_presets
+  for delete to authenticated using (public.is_admin());
+
+drop policy if exists "members read expenses" on public.expenses;
+create policy "members read expenses" on public.expenses
+  for select to authenticated using (public.is_member());
+
+drop policy if exists "members add expenses" on public.expenses;
+create policy "members add expenses" on public.expenses
+  for insert to authenticated with check (public.is_member() and created_by = auth.uid());
+
+drop policy if exists "admins delete expenses" on public.expenses;
+create policy "admins delete expenses" on public.expenses
+  for delete to authenticated using (public.is_admin());
+
 revoke all on all tables in schema public from anon, authenticated;
 grant select on public.profiles, public.clients, public.sales, public.sale_items,
   public.payments, public.client_balances to authenticated;
-grant select, insert, update, delete on public.services to authenticated;
+grant select, insert, update, delete on public.services, public.expense_presets to authenticated;
+grant select, insert, delete on public.expenses to authenticated;
+grant delete on public.sales to authenticated;
 
 revoke execute on all functions in schema public from public, anon, authenticated;
 grant execute on function public.has_users() to anon, authenticated;
@@ -543,7 +763,12 @@ grant execute on function public.is_admin() to authenticated;
 grant execute on function public.allow_email(text) to authenticated;
 grant execute on function public.set_user_role(uuid, text) to authenticated;
 grant execute on function public.update_my_username(text) to authenticated;
-grant execute on function public.create_sale(jsonb, numeric, text, text, uuid) to authenticated;
-grant execute on function public.record_client_payment(uuid, numeric) to authenticated;
+grant execute on function public.clear_sales(text) to authenticated;
+grant execute on function public.clear_expenses(text) to authenticated;
+grant execute on function public.update_client(uuid, text, text, text) to authenticated;
+grant execute on function public.delete_client(uuid) to authenticated;
+grant execute on function public.clean_payments(jsonb) to authenticated;
+grant execute on function public.create_sale(jsonb, jsonb, text, text, uuid) to authenticated;
+grant execute on function public.record_client_payment(uuid, jsonb) to authenticated;
 grant execute on function public.search_sales(timestamptz, timestamptz, text, uuid, uuid, text, integer, integer) to authenticated;
 grant execute on function public.analytics(timestamptz, timestamptz, text) to authenticated;

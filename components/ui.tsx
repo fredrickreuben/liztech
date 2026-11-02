@@ -11,19 +11,25 @@ import {
   ChevronDown,
   CircleAlert,
   Clock,
+  HandCoins,
   KeyRound,
   Lock,
   LogOut,
   Mail,
   Minus,
+  Pencil,
   Phone,
   Plus,
   ReceiptText,
   Search,
   ShieldCheck,
   ShoppingCart,
+  Smartphone,
+  Split,
   Tag,
+  Trash2,
   TrendingUp,
+  TriangleAlert,
   UserPlus,
   UserRound,
   Users,
@@ -63,6 +69,12 @@ const icons = {
   up: ArrowUp,
   down: ArrowDown,
   ledger: BookOpenText,
+  expenses: HandCoins,
+  mobile: Smartphone,
+  split: Split,
+  trash: Trash2,
+  edit: Pencil,
+  warning: TriangleAlert,
 };
 
 export type IconName = keyof typeof icons;
@@ -250,6 +262,86 @@ export function Sparkline({ values, label }: { values: number[]; label: string }
       <polyline points={line} fill="none" stroke="var(--color-mint)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
       <circle cx={lastX} cy={lastY} r="1.6" fill="var(--color-mint)" />
     </svg>
+  );
+}
+
+// Asks before anything permanent happens. With requireText, the button stays
+// disabled until that exact word is typed.
+export function ConfirmDialog({
+  title,
+  message,
+  confirmLabel,
+  requireText,
+  busy = false,
+  error = "",
+  onConfirm,
+  onCancel,
+}: {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  requireText?: string;
+  busy?: boolean;
+  error?: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [typed, setTyped] = useState("");
+  const fieldId = useId();
+
+  useEffect(() => {
+    const element = dialog.current;
+    if (element && !element.open) element.showModal();
+  }, []);
+
+  return (
+    <dialog
+      ref={dialog}
+      aria-labelledby={`${fieldId}-title`}
+      className="m-auto w-[calc(100%-2rem)] max-w-md rounded-2xl bg-surface p-5 text-ink shadow-2xl backdrop:bg-navy/60 backdrop:backdrop-blur-[2px]"
+      onCancel={(event) => {
+        event.preventDefault();
+        onCancel();
+      }}
+    >
+      <div className="flex items-start gap-3">
+        <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-danger-soft text-danger">
+          <Icon name="warning" />
+        </span>
+        <div className="min-w-0">
+          <h2 id={`${fieldId}-title`} className="text-lg font-bold">{title}</h2>
+          <p className="mt-1 text-sm text-muted">{message}</p>
+        </div>
+      </div>
+      {requireText && (
+        <div className="mt-4">
+          <label className="label" htmlFor={fieldId}>Type {requireText} to confirm</label>
+          <input
+            id={fieldId}
+            className="field"
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            autoComplete="off"
+            autoCapitalize="characters"
+          />
+        </div>
+      )}
+      {error && <div className="mt-3"><ErrorNote>{error}</ErrorNote></div>}
+      <div className="mt-5 grid grid-cols-2 gap-2">
+        <button type="button" className="btn btn-quiet" onClick={onCancel} autoFocus>
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="btn btn-danger"
+          disabled={busy || (requireText !== undefined && typed !== requireText)}
+          onClick={onConfirm}
+        >
+          {busy ? "Deleting…" : confirmLabel}
+        </button>
+      </div>
+    </dialog>
   );
 }
 

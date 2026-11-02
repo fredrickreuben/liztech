@@ -9,6 +9,12 @@ export function money(value: number) {
   return `${currency} ${amount.format(value)}`;
 }
 
+export function methodLabel(method: string | null) {
+  if (method === "cash") return "Cash";
+  if (method === "mpesa") return "M-PESA";
+  return "Not recorded";
+}
+
 export function dateTime(iso: string) {
   return new Date(iso).toLocaleString(undefined, {
     day: "numeric",

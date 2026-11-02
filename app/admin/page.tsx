@@ -3,10 +3,10 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
-import { Avatar, EmptyNote, ErrorNote, Icon, PageTitle } from "@/components/ui";
+import { Avatar, ConfirmDialog, EmptyNote, ErrorNote, Icon, PageTitle } from "@/components/ui";
 import { money } from "@/lib/format";
 import { createSignupClient, supabase } from "@/lib/supabase";
-import type { Profile, Role, Service } from "@/lib/types";
+import type { ExpensePreset, Profile, Role, Service } from "@/lib/types";
 
 export default function AdminPage() {
   const { profile } = useAuth();
@@ -26,8 +26,14 @@ export default function AdminPage() {
     <div>
       <PageTitle subtitle="Manage what you sell and who can use the system.">Admin</PageTitle>
       <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
-        <ServicesPanel />
-        <UsersPanel />
+        <div className="space-y-6">
+          <ServicesPanel />
+          <ExpensePresetsPanel />
+        </div>
+        <div className="space-y-6">
+          <UsersPanel />
+          <DangerZone />
+        </div>
       </div>
     </div>
   );
@@ -190,6 +196,222 @@ function ServicesPanel() {
       </form>
 
       {error && <div className="mt-3"><ErrorNote>{error}</ErrorNote></div>}
+    </section>
+  );
+}
+
+function ExpensePresetsPanel() {
+  const [presets, setPresets] = useState<ExpensePreset[] | null>(null);
+  const [name, setName] = useState("");
+  const [amount, setAmount] = useState("");
+  const [editing, setEditing] = useState<ExpensePreset | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [version, setVersion] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    supabase
+      .from("expense_presets")
+      .select("id, name, default_amount")
+      .order("name")
+      .then(({ data, error: loadError }) => {
+        if (!active) return;
+        if (loadError) setError(loadError.message);
+        else setPresets(data as ExpensePreset[]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [version]);
+
+  function clearForm() {
+    setEditing(null);
+    setName("");
+    setAmount("");
+  }
+
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    const cost = Number(amount);
+    if (!name.trim()) return setError("Enter an expense name.");
+    if (amount === "" || !Number.isFinite(cost) || cost < 0) return setError("Enter a valid default cost.");
+
+    setBusy(true);
+    setError("");
+    const values = { name: name.trim(), default_amount: cost };
+    const { error: saveError } = editing
+      ? await supabase.from("expense_presets").update(values).eq("id", editing.id)
+      : await supabase.from("expense_presets").insert(values);
+    setBusy(false);
+    if (saveError) return setError(saveError.message);
+    clearForm();
+    setVersion((v) => v + 1);
+  }
+
+  async function remove(preset: ExpensePreset) {
+    if (!window.confirm(`Remove ${preset.name}? Expenses already recorded stay in your records.`)) return;
+    setError("");
+    const { error: deleteError } = await supabase.from("expense_presets").delete().eq("id", preset.id);
+    if (deleteError) return setError(deleteError.message);
+    if (editing?.id === preset.id) clearForm();
+    setVersion((v) => v + 1);
+  }
+
+  return (
+    <section className="card p-4">
+      <h2 className="flex items-center gap-2 text-lg font-bold"><Icon name="expenses" />Expense presets</h2>
+      <p className="mt-0.5 text-sm text-muted">Regular costs, ready to pick on the Expenses page. Tap a chip to edit it.</p>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        {presets === null && !error && <p className="text-sm text-muted">Loading…</p>}
+        {presets?.length === 0 && <p className="text-sm text-muted">No presets yet. Add rent, power, paper and so on below.</p>}
+        {presets?.map((preset) => (
+          <span
+            key={preset.id}
+            className={`inline-flex min-h-11 items-center rounded-full border bg-surface ${
+              editing?.id === preset.id ? "border-navy ring-1 ring-navy" : "border-[#c3ccd9]"
+            }`}
+          >
+            <button
+              type="button"
+              className="flex min-h-11 cursor-pointer items-center gap-2 rounded-l-full pl-4 pr-2 text-left text-[15px] font-medium"
+              onClick={() => {
+                setEditing(preset);
+                setName(preset.name);
+                setAmount(String(preset.default_amount));
+                setError("");
+              }}
+            >
+              {preset.name}
+              <span className="money text-sm font-semibold text-brand">{money(preset.default_amount)}</span>
+            </button>
+            <button
+              type="button"
+              aria-label={`Remove ${preset.name}`}
+              className="flex size-11 cursor-pointer items-center justify-center rounded-r-full text-muted hover:text-danger"
+              onClick={() => remove(preset)}
+            >
+              <Icon name="remove" size={17} />
+            </button>
+          </span>
+        ))}
+      </div>
+
+      <form onSubmit={save} className="mt-4 border-t border-line pt-4">
+        <h3 className="mb-2 text-sm font-bold">{editing ? `Edit ${editing.name}` : "Add a preset"}</h3>
+        <div className="grid grid-cols-[minmax(0,1fr)_110px] gap-2">
+          <div>
+            <label className="label" htmlFor="preset-name">Expense</label>
+            <input
+              id="preset-name"
+              className="field"
+              placeholder="e.g. Rent"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="label" htmlFor="preset-cost">Default cost</label>
+            <input
+              id="preset-cost"
+              className="field money"
+              type="number"
+              inputMode="decimal"
+              min="0"
+              step="any"
+              placeholder="0"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+            />
+          </div>
+        </div>
+        <div className="mt-3 flex gap-2">
+          {editing && (
+            <button type="button" className="btn btn-quiet flex-1" onClick={clearForm}>Cancel</button>
+          )}
+          <button className="btn btn-primary flex-1" disabled={busy}>
+            <Icon name={editing ? "check" : "plus"} size={18} />
+            {editing ? "Save preset" : "Add preset"}
+          </button>
+        </div>
+      </form>
+
+      {error && <div className="mt-3"><ErrorNote>{error}</ErrorNote></div>}
+    </section>
+  );
+}
+
+function DangerZone() {
+  const [target, setTarget] = useState<"sales" | "expenses" | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  async function clearAll() {
+    if (!target) return;
+    setBusy(true);
+    setError("");
+    const { data, error: rpcError } = await supabase.rpc(target === "sales" ? "clear_sales" : "clear_expenses", {
+      p_confirm: "DELETE",
+    });
+    setBusy(false);
+    if (rpcError) return setError(rpcError.message);
+    setNotice(`Deleted ${data} ${target === "sales" ? "sales" : "expenses"}.`);
+    setTarget(null);
+  }
+
+  return (
+    <section className="card border-[#eab8b8]! p-4">
+      <h2 className="flex items-center gap-2 text-lg font-bold text-danger"><Icon name="warning" />Reset data</h2>
+      <p className="mt-0.5 text-sm text-muted">Permanently removes records. There is no undo.</p>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <button
+          type="button"
+          className="btn btn-danger-quiet"
+          onClick={() => {
+            setError("");
+            setNotice("");
+            setTarget("sales");
+          }}
+        >
+          <Icon name="trash" size={18} />
+          Clear all sales
+        </button>
+        <button
+          type="button"
+          className="btn btn-danger-quiet"
+          onClick={() => {
+            setError("");
+            setNotice("");
+            setTarget("expenses");
+          }}
+        >
+          <Icon name="trash" size={18} />
+          Clear all expenses
+        </button>
+      </div>
+      {notice && (
+        <p className="mt-3 rounded-lg bg-brand-soft p-3 text-sm text-brand-dark" role="status">
+          {notice}
+        </p>
+      )}
+      {target && (
+        <ConfirmDialog
+          title={target === "sales" ? "Clear all sales?" : "Clear all expenses?"}
+          message={
+            target === "sales"
+              ? "Every sale and payment will be permanently deleted, and all client balances go to zero. Clients and services stay. This cannot be undone."
+              : "Every expense entry will be permanently deleted. Presets stay. This cannot be undone."
+          }
+          confirmLabel="Clear all"
+          requireText="DELETE"
+          busy={busy}
+          error={error}
+          onConfirm={clearAll}
+          onCancel={() => setTarget(null)}
+        />
+      )}
     </section>
   );
 }

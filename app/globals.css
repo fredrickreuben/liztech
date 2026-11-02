@@ -169,6 +169,25 @@ body {
   background: var(--color-paper);
 }
 
+.btn-danger {
+  background: var(--color-danger);
+  color: #fff;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: #991b1b;
+}
+
+.btn-danger-quiet {
+  background: var(--color-surface);
+  border-color: #eab8b8;
+  color: var(--color-danger);
+}
+
+.btn-danger-quiet:hover:not(:disabled) {
+  background: var(--color-danger-soft);
+}
+
 .btn-small {
   min-height: 38px;
   padding: 0 12px;

@@ -3,13 +3,14 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
+import { describePayments, emptyPayment, linesTotal, PaymentFields, paymentLines, type PaymentDraft } from "@/components/payment-fields";
 import { Avatar, CountUpMoney, Delta, ErrorNote, Icon, Sparkline, StatusBadge } from "@/components/ui";
 import { browserTimeZone, money, percentChange, rangeBounds, timeOnly } from "@/lib/format";
 import { cleanSearch, supabase } from "@/lib/supabase";
 import type { Analytics, ClientBalance, SaleRow, SalesSearchResult, Service } from "@/lib/types";
 
 type Cart = Record<string, number>;
-type FieldErrors = { name?: string; phone?: string; deposit?: string };
+type FieldErrors = { name?: string; phone?: string; payment?: string; price?: string };
 
 export default function SellPage() {
   const { profile } = useAuth();
@@ -28,7 +29,8 @@ export default function SellPage() {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [client, setClient] = useState<ClientBalance | null>(null);
-  const [deposit, setDeposit] = useState("");
+  const [payment, setPayment] = useState<PaymentDraft>(emptyPayment);
+  const [prices, setPrices] = useState<Record<string, string>>({});
   const [matches, setMatches] = useState<ClientBalance[]>([]);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [saveError, setSaveError] = useState("");
@@ -93,14 +95,25 @@ export default function SellPage() {
     };
   }, [query, client]);
 
+  // A price typed at checkout replaces the service's own for this sale only.
   const lines = useMemo(
     () =>
       (services ?? [])
         .filter((service) => cart[service.id])
-        .map((service) => ({ ...service, quantity: cart[service.id] })),
-    [services, cart],
+        .map((service) => {
+          const typed = prices[service.id];
+          const unitPrice = typed === undefined ? service.price : Number(typed);
+          const validPrice = typed !== "" && Number.isFinite(unitPrice) && unitPrice >= 0;
+          return {
+            ...service,
+            quantity: cart[service.id],
+            unitPrice: validPrice ? unitPrice : 0,
+            validPrice,
+          };
+        }),
+    [services, cart, prices],
   );
-  const total = lines.reduce((sum, line) => sum + line.price * line.quantity, 0);
+  const total = lines.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0);
   const count = lines.reduce((sum, line) => sum + line.quantity, 0);
   const visibleMatches = !client && query.length >= 2 ? matches : [];
 
@@ -117,6 +130,11 @@ export default function SellPage() {
       else next[id] = 1;
       return next;
     });
+    setPrices((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
     setNotice("");
   }
 
@@ -131,10 +149,11 @@ export default function SellPage() {
 
   function reset() {
     setCart({});
+    setPrices({});
     setName("");
     setPhone("");
     setClient(null);
-    setDeposit("");
+    setPayment(emptyPayment);
     setMatches([]);
     setFieldErrors({});
     setSaveError("");
@@ -143,23 +162,32 @@ export default function SellPage() {
 
   async function save(kind: "paid" | "credit") {
     const errors: FieldErrors = {};
-    const paidNow = kind === "paid" ? total : Number(deposit || 0);
+    const payments = paymentLines(payment, kind === "paid" && payment.choice !== "split" ? total : undefined);
+    const paidNow = payments ? linesTotal(payments) : 0;
+
+    if (lines.some((line) => !line.validPrice)) errors.price = "Enter a valid price for every service.";
+
+    if (!payments) {
+      errors.payment = "Enter a valid amount.";
+    } else if (kind === "paid" && Math.abs(paidNow - total) >= 0.005) {
+      errors.payment = "The split must add up to the total.";
+    } else if (kind === "credit" && paidNow >= total) {
+      errors.payment = "This covers the full total. Use Save as paid.";
+    }
 
     if (kind === "credit") {
       if (!client && !name.trim()) errors.name = "Name is required for credit.";
       if (!client && !phone.trim()) errors.phone = "Phone is required for credit.";
-      if (!Number.isFinite(paidNow) || paidNow < 0) errors.deposit = "Enter a valid amount.";
-      else if (paidNow >= total) errors.deposit = "This covers the full total. Use Save as paid.";
     }
 
     setFieldErrors(errors);
     setSaveError("");
-    if (Object.keys(errors).length > 0) return;
+    if (Object.keys(errors).length > 0 || !payments) return;
 
     setBusy(true);
     const { error } = await supabase.rpc("create_sale", {
-      p_items: lines.map((line) => ({ service_id: line.id, quantity: line.quantity })),
-      p_amount_paid: paidNow,
+      p_items: lines.map((line) => ({ service_id: line.id, quantity: line.quantity, unit_price: line.unitPrice })),
+      p_payments: payments,
       p_customer_name: client ? null : name,
       p_phone: client ? null : phone,
       p_client_id: client?.id ?? null,
@@ -172,10 +200,11 @@ export default function SellPage() {
     }
 
     const who = client?.name || name.trim() || "Walk-in";
+    const breakdown = payments.length > 0 ? ` ${describePayments(payments)}.` : "";
     setNotice(
       kind === "paid"
-        ? `Saved ${money(total)} from ${who}.`
-        : `Saved ${money(total)} for ${who}. ${money(total - paidNow)} on credit.`,
+        ? `Saved ${money(total)} from ${who}.${breakdown}`
+        : `Saved ${money(total)} for ${who}. ${money(total - paidNow)} on credit.${breakdown}`,
     );
     reset();
     setSavedCount((n) => n + 1);
@@ -215,6 +244,10 @@ export default function SellPage() {
               <dd className="money truncate text-sm font-bold sm:text-xl">{today?.sale_count ?? 0}</dd>
             </div>
           </dl>
+
+          <p className="money mt-2 text-xs text-white/70">
+            Cash {money(today?.by_method.cash ?? 0)} · M-PESA {money(today?.by_method.mpesa ?? 0)}
+          </p>
 
           {collectionRate !== null && (
             <div className="mt-3">
@@ -271,7 +304,7 @@ export default function SellPage() {
                 <span>
                   <span className="block leading-tight">{service.name}</span>
                   <span className={`money block text-[13px] font-semibold leading-tight ${selected ? "text-mint" : "text-brand"}`}>
-                    {money(service.price)}
+                    {money(lines.find((line) => line.id === service.id)?.unitPrice ?? service.price)}
                     {cart[service.id] > 1 ? ` × ${cart[service.id]}` : ""}
                   </span>
                 </span>
@@ -356,19 +389,19 @@ export default function SellPage() {
           </div>
         ) : (
           <>
-            <ul className="mt-3 space-y-2.5">
+            <ul className="mt-3 space-y-3">
               {lines.map((line) => (
                 <li key={line.id}>
                   <div className="flex items-baseline text-sm">
                     <span className="truncate font-medium">{line.name}</span>
                     <span className="leader" />
-                    <span className="money shrink-0 font-semibold">{money(line.price * line.quantity)}</span>
+                    <span className="money shrink-0 font-semibold">{money(line.unitPrice * line.quantity)}</span>
                   </div>
                   <div className="mt-1 flex items-center gap-1">
                     <button
                       type="button"
                       aria-label={`Fewer ${line.name}`}
-                      className="btn btn-quiet btn-small !min-h-8 w-9 !px-0"
+                      className="btn btn-quiet btn-small !min-h-9 w-9 !px-0"
                       onClick={() => setQuantity(line.id, line.quantity - 1)}
                     >
                       <Icon name="minus" size={15} />
@@ -377,16 +410,35 @@ export default function SellPage() {
                     <button
                       type="button"
                       aria-label={`More ${line.name}`}
-                      className="btn btn-quiet btn-small !min-h-8 w-9 !px-0"
+                      className="btn btn-quiet btn-small !min-h-9 w-9 !px-0"
                       onClick={() => setQuantity(line.id, line.quantity + 1)}
                     >
                       <Icon name="plus" size={15} />
                     </button>
-                    <span className="money ml-2 text-xs text-muted">@ {money(line.price)}</span>
+                    <span className="ml-2 text-xs text-muted">@</span>
+                    <input
+                      aria-label={`Price for ${line.name}`}
+                      className="field money !min-h-9 !w-24 !px-2"
+                      type="number"
+                      inputMode="decimal"
+                      min="0"
+                      step="any"
+                      value={prices[line.id] ?? String(line.price)}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setPrices((current) => ({ ...current, [line.id]: value }));
+                        setFieldErrors((current) => ({ ...current, price: undefined }));
+                      }}
+                      aria-invalid={!line.validPrice}
+                    />
+                    {line.validPrice && line.unitPrice !== line.price && (
+                      <span className="money ml-1 truncate text-xs text-muted">was {money(line.price)}</span>
+                    )}
                   </div>
                 </li>
               ))}
             </ul>
+            {fieldErrors.price && <p className="mt-2 text-xs text-danger">{fieldErrors.price}</p>}
 
             <div className="tear" />
 
@@ -475,25 +527,18 @@ export default function SellPage() {
               )}
 
               <div>
-                <label className="label" htmlFor="deposit">
-                  Paid now, if on credit <span className="font-normal text-muted">(optional)</span>
-                </label>
-                <input
-                  id="deposit"
-                  className="field money"
-                  type="number"
-                  inputMode="decimal"
-                  min="0"
-                  step="any"
-                  placeholder="0"
-                  value={deposit}
-                  onChange={(e) => {
-                    setDeposit(e.target.value);
-                    setFieldErrors((current) => ({ ...current, deposit: undefined }));
+                <PaymentFields
+                  value={payment}
+                  onChange={(next) => {
+                    setPayment(next);
+                    setFieldErrors((current) => ({ ...current, payment: undefined }));
                   }}
-                  aria-invalid={Boolean(fieldErrors.deposit)}
+                  amountLabel="Paid now, if on credit"
+                  amountHint="(optional)"
+                  target={total}
+                  invalid={Boolean(fieldErrors.payment)}
                 />
-                {fieldErrors.deposit && <p className="mt-1 text-xs text-danger">{fieldErrors.deposit}</p>}
+                {fieldErrors.payment && <p className="mt-1 text-xs text-danger">{fieldErrors.payment}</p>}
               </div>
 
               {saveError && <ErrorNote>{saveError}</ErrorNote>}

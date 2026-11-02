@@ -1,14 +1,20 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Avatar, EmptyNote, ErrorNote, Icon, IconField, PageTitle, RangePicker, Stat, StatusBadge } from "@/components/ui";
-import { dateTime, money, rangeBounds, type DateRange } from "@/lib/format";
+import { useAuth } from "@/components/auth-provider";
+import { Avatar, ConfirmDialog, EmptyNote, ErrorNote, Icon, IconField, PageTitle, RangePicker, Stat, StatusBadge } from "@/components/ui";
+import { dateTime, methodLabel, money, rangeBounds, type DateRange } from "@/lib/format";
 import { supabase } from "@/lib/supabase";
 import type { Profile, SaleRow, SalesSearchResult, Service } from "@/lib/types";
 
 const PAGE_SIZE = 50;
 
 export default function SalesPage() {
+  const { profile } = useAuth();
+  const [deleting, setDeleting] = useState<SaleRow | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+  const [version, setVersion] = useState(0);
   const [range, setRange] = useState<DateRange>({ preset: "today", from: "", to: "" });
   const [status, setStatus] = useState("");
   const [staffId, setStaffId] = useState("");
@@ -70,7 +76,7 @@ export default function SalesPage() {
     return () => {
       active = false;
     };
-  }, [range, status, staffId, serviceId, debouncedSearch, page, incompleteCustom]);
+  }, [range, status, staffId, serviceId, debouncedSearch, page, incompleteCustom, version]);
 
   function resetting<T>(setter: (value: T) => void) {
     return (value: T) => {
@@ -80,6 +86,20 @@ export default function SalesPage() {
   }
 
   const hasMore = result ? rows.length < result.count : false;
+
+  async function confirmDelete() {
+    if (!deleting) return;
+    setDeleteBusy(true);
+    setDeleteError("");
+    const { data, error: failure } = await supabase.from("sales").delete().eq("id", deleting.id).select("id");
+    setDeleteBusy(false);
+    if (failure) return setDeleteError(failure.message);
+    if (!data?.length) return setDeleteError("This sale could not be deleted.");
+    setDeleting(null);
+    setOpenId(null);
+    setPage(0);
+    setVersion((v) => v + 1);
+  }
 
   return (
     <div>
@@ -148,6 +168,14 @@ export default function SalesPage() {
                   sale={sale}
                   open={openId === sale.id}
                   onToggle={() => setOpenId(openId === sale.id ? null : sale.id)}
+                  onDelete={
+                    profile?.role === "admin"
+                      ? () => {
+                          setDeleteError("");
+                          setDeleting(sale);
+                        }
+                      : undefined
+                  }
                 />
               ))}
             </ul>
@@ -159,6 +187,18 @@ export default function SalesPage() {
           </button>
         )}
       </div>
+
+      {deleting && (
+        <ConfirmDialog
+          title="Delete this sale?"
+          message={`${deleting.customer_name}, ${money(deleting.total)}. Its payments are deleted too, and any credit on it is removed from what the client owes. This cannot be undone.`}
+          confirmLabel="Delete sale"
+          busy={deleteBusy}
+          error={deleteError}
+          onConfirm={confirmDelete}
+          onCancel={() => setDeleting(null)}
+        />
+      )}
     </div>
   );
 }
@@ -167,7 +207,17 @@ function itemSummary(sale: SaleRow) {
   return sale.items.map((item) => (item.quantity > 1 ? `${item.name} × ${item.quantity}` : item.name)).join(", ");
 }
 
-function SaleListRow({ sale, open, onToggle }: { sale: SaleRow; open: boolean; onToggle: () => void }) {
+function SaleListRow({
+  sale,
+  open,
+  onToggle,
+  onDelete,
+}: {
+  sale: SaleRow;
+  open: boolean;
+  onToggle: () => void;
+  onDelete?: () => void;
+}) {
   return (
     <li>
       <button
@@ -215,19 +265,19 @@ function SaleListRow({ sale, open, onToggle }: { sale: SaleRow; open: boolean; o
           <span className={`text-muted transition-transform ${open ? "rotate-180" : ""}`}><Icon name="chevron" size={18} /></span>
         </div>
       </button>
-      {open && <SaleDetail sale={sale} />}
+      {open && <SaleDetail sale={sale} onDelete={onDelete} />}
     </li>
   );
 }
 
-function SaleDetail({ sale }: { sale: SaleRow }) {
-  const [payments, setPayments] = useState<{ id: string; amount: number; created_at: string }[] | null>(null);
+function SaleDetail({ sale, onDelete }: { sale: SaleRow; onDelete?: () => void }) {
+  const [payments, setPayments] = useState<{ id: string; amount: number; method: string | null; created_at: string }[] | null>(null);
 
   useEffect(() => {
     let active = true;
     supabase
       .from("payments")
-      .select("id, amount, created_at")
+      .select("id, amount, method, created_at")
       .eq("sale_id", sale.id)
       .order("created_at")
       .then(({ data }) => {
@@ -238,36 +288,62 @@ function SaleDetail({ sale }: { sale: SaleRow }) {
     };
   }, [sale.id]);
 
+  const byMethod = (payments ?? []).reduce<Record<string, number>>((totals, payment) => {
+    const label = methodLabel(payment.method);
+    totals[label] = (totals[label] ?? 0) + payment.amount;
+    return totals;
+  }, {});
+  const methods = Object.entries(byMethod);
+
   return (
-    <div className="rise grid gap-4 border-t border-line bg-paper/60 p-4 text-sm sm:grid-cols-2">
-      <div>
-        <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">Services</h3>
-        <ul className="space-y-1">
-          {sale.items.map((item) => (
-            <li key={item.name} className="flex items-baseline">
-              <span className="truncate">{item.name}</span>
-              <span className="money ml-1.5 shrink-0 text-xs text-muted">{item.quantity} @ {money(item.unit_price)}</span>
-              <span className="leader" />
-              <span className="money shrink-0 font-semibold">{money(item.line_total)}</span>
-            </li>
-          ))}
-        </ul>
-        {sale.customer_phone && <p className="mt-2 text-xs text-muted">Phone: {sale.customer_phone}</p>}
+    <div className="rise border-t border-line bg-paper/60 p-4 text-sm">
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div>
+          <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">Services</h3>
+          <ul className="space-y-1">
+            {sale.items.map((item) => (
+              <li key={item.name} className="flex items-baseline">
+                <span className="truncate">{item.name}</span>
+                <span className="money ml-1.5 shrink-0 text-xs text-muted">
+                  {item.quantity} @ {money(item.unit_price)}
+                  {item.list_price !== null && item.list_price !== item.unit_price ? ` (was ${money(item.list_price)})` : ""}
+                </span>
+                <span className="leader" />
+                <span className="money shrink-0 font-semibold">{money(item.line_total)}</span>
+              </li>
+            ))}
+          </ul>
+          {sale.customer_phone && <p className="mt-2 text-xs text-muted">Phone: {sale.customer_phone}</p>}
+        </div>
+        <div>
+          <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">Payments</h3>
+          {payments === null && <p className="text-muted">Loading…</p>}
+          {payments?.length === 0 && <p className="text-muted">Nothing paid yet.</p>}
+          <ul className="space-y-1">
+            {payments?.map((payment) => (
+              <li key={payment.id} className="flex items-baseline">
+                <span className="truncate">{methodLabel(payment.method)}</span>
+                <span className="ml-1.5 shrink-0 text-xs text-muted">{dateTime(payment.created_at)}</span>
+                <span className="leader" />
+                <span className="money shrink-0 font-semibold text-brand">{money(payment.amount)}</span>
+              </li>
+            ))}
+          </ul>
+          {methods.length > 1 && (
+            <p className="money mt-2 border-t border-line pt-2 text-xs font-semibold">
+              {methods.map(([label, amount]) => `${label} ${money(amount)}`).join(" · ")}
+            </p>
+          )}
+        </div>
       </div>
-      <div>
-        <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted">Payments</h3>
-        {payments === null && <p className="text-muted">Loading…</p>}
-        {payments?.length === 0 && <p className="text-muted">Nothing paid yet.</p>}
-        <ul className="space-y-1">
-          {payments?.map((payment) => (
-            <li key={payment.id} className="flex items-baseline">
-              <span className="text-muted">{dateTime(payment.created_at)}</span>
-              <span className="leader" />
-              <span className="money shrink-0 font-semibold text-brand">{money(payment.amount)}</span>
-            </li>
-          ))}
-        </ul>
-      </div>
+      {onDelete && (
+        <div className="mt-4 flex justify-end border-t border-line pt-3">
+          <button type="button" className="btn btn-danger-quiet btn-small" onClick={onDelete}>
+            <Icon name="trash" size={16} />
+            Delete sale
+          </button>
+        </div>
+      )}
     </div>
   );
 }

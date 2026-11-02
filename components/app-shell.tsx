@@ -11,6 +11,7 @@ const links: { href: string; label: string; icon: IconName; adminOnly?: boolean 
   { href: "/", label: "Sell", icon: "sell" },
   { href: "/sales", label: "Sales", icon: "sales" },
   { href: "/clients", label: "Clients", icon: "clients" },
+  { href: "/expenses", label: "Expenses", icon: "expenses" },
   { href: "/analytics", label: "Analytics", icon: "analytics" },
   { href: "/admin", label: "Admin", icon: "admin", adminOnly: true },
 ];

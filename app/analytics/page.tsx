@@ -303,6 +303,23 @@ export default function AnalyticsPage() {
             />
           </div>
 
+          <div className="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-4">
+            <Stat label="Received in cash" value={money(data.by_method.cash)} icon="cash" tone="brand" />
+            <Stat label="Received by M-PESA" value={money(data.by_method.mpesa)} icon="mobile" tone="brand" />
+            <Stat label="Expenses" value={money(data.expenses_total)} icon="expenses" tone="danger" />
+            <Stat
+              label="Received less expenses"
+              value={money(data.collected - data.expenses_total)}
+              icon="wallet"
+              tone={data.collected - data.expenses_total < 0 ? "danger" : "brand"}
+            />
+          </div>
+          {data.by_method.unspecified > 0 && (
+            <p className="money text-xs text-muted">
+              {money(data.by_method.unspecified)} was received before payment methods were recorded.
+            </p>
+          )}
+
           {data.sale_count === 0 && <EmptyNote>No sales in this period.</EmptyNote>}
           {data.sale_count > 0 && data.by_day.length > 1 && <TrendChart days={data.by_day} />}
 

@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useId, useMemo, useState } from "react";
-import { Avatar, EmptyNote, ErrorNote, Icon, IconField, PageTitle, Stat } from "@/components/ui";
-import { dateTime, money } from "@/lib/format";
+import { useAuth } from "@/components/auth-provider";
+import { emptyPayment, linesTotal, PaymentFields, paymentLines, type PaymentDraft } from "@/components/payment-fields";
+import { Avatar, ConfirmDialog, EmptyNote, ErrorNote, Icon, IconField, PageTitle, Stat } from "@/components/ui";
+import { dateTime, methodLabel, money } from "@/lib/format";
 import { cleanSearch, supabase } from "@/lib/supabase";
 import type { ClientBalance } from "@/lib/types";
 
@@ -12,7 +14,7 @@ type LedgerSale = {
   created_at: string;
   sale_items: { name: string; quantity: number }[];
 };
-type LedgerPayment = { id: string; amount: number; created_at: string };
+type LedgerPayment = { id: string; amount: number; method: string | null; created_at: string };
 type LedgerEntry = {
   id: string;
   at: string;
@@ -151,7 +153,15 @@ export default function ClientsPage() {
                   </button>
                   {selected?.id === client.id && (
                     <div className="rise border-t border-line p-4 lg:hidden">
-                      <Ledger client={selected} version={version} onPaid={() => setVersion((v) => v + 1)} />
+                      <Ledger
+                        client={selected}
+                        version={version}
+                        onChanged={() => setVersion((v) => v + 1)}
+                        onDeleted={() => {
+                          setSelectedId(null);
+                          setVersion((v) => v + 1);
+                        }}
+                      />
                     </div>
                   )}
                 </li>
@@ -162,7 +172,15 @@ export default function ClientsPage() {
         <div className="hidden lg:block">
           {selected ? (
             <div className="card rise sticky top-7 p-5">
-              <Ledger client={selected} version={version} onPaid={() => setVersion((v) => v + 1)} />
+              <Ledger
+                client={selected}
+                version={version}
+                onChanged={() => setVersion((v) => v + 1)}
+                onDeleted={() => {
+                  setSelectedId(null);
+                  setVersion((v) => v + 1);
+                }}
+              />
             </div>
           ) : (
             clients && clients.length > 0 && <EmptyNote>Select a client to see their ledger.</EmptyNote>
@@ -176,18 +194,32 @@ export default function ClientsPage() {
 function Ledger({
   client,
   version,
-  onPaid,
+  onChanged,
+  onDeleted,
 }: {
   client: ClientBalance;
   version: number;
-  onPaid: () => void;
+  onChanged: () => void;
+  onDeleted: () => void;
 }) {
+  const { profile } = useAuth();
   const [sales, setSales] = useState<LedgerSale[] | null>(null);
   const [payments, setPayments] = useState<LedgerPayment[]>([]);
   const [error, setError] = useState("");
-  const [amount, setAmount] = useState("");
+  const [payment, setPayment] = useState<PaymentDraft>(emptyPayment);
   const [busy, setBusy] = useState(false);
-  const payFieldId = useId();
+
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState("");
+  const [editPhone, setEditPhone] = useState("");
+  const [editNotes, setEditNotes] = useState("");
+  const [editError, setEditError] = useState("");
+  const [editBusy, setEditBusy] = useState(false);
+  const fieldId = useId();
+
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -196,7 +228,7 @@ function Ledger({
         .from("sales")
         .select("id, total, created_at, sale_items(name, quantity)")
         .eq("client_id", client.id),
-      supabase.from("payments").select("id, amount, created_at").eq("client_id", client.id),
+      supabase.from("payments").select("id, amount, method, created_at").eq("client_id", client.id),
     ]).then(([salesResult, paymentsResult]) => {
       if (!active) return;
       const failure = salesResult.error ?? paymentsResult.error;
@@ -226,12 +258,12 @@ function Ledger({
         payment: 0,
         order: 0,
       })),
-      ...payments.map((payment) => ({
-        id: `p-${payment.id}`,
-        at: payment.created_at,
-        title: "Payment",
+      ...payments.map((entry) => ({
+        id: `p-${entry.id}`,
+        at: entry.created_at,
+        title: `Payment · ${methodLabel(entry.method)}`,
         charge: 0,
-        payment: payment.amount,
+        payment: entry.amount,
         order: 1,
       })),
     ].sort((a, b) => a.at.localeCompare(b.at) || a.order - b.order);
@@ -246,8 +278,8 @@ function Ledger({
 
   async function pay(event: React.FormEvent) {
     event.preventDefault();
-    const value = Number(amount);
-    if (!Number.isFinite(value) || value <= 0) {
+    const lines = paymentLines(payment);
+    if (!lines || linesTotal(lines) <= 0) {
       setError("Enter an amount greater than zero.");
       return;
     }
@@ -255,15 +287,49 @@ function Ledger({
     setError("");
     const { error: rpcError } = await supabase.rpc("record_client_payment", {
       p_client_id: client.id,
-      p_amount: value,
+      p_payments: lines,
     });
     setBusy(false);
     if (rpcError) {
       setError(rpcError.message);
       return;
     }
-    setAmount("");
-    onPaid();
+    setPayment(emptyPayment);
+    onChanged();
+  }
+
+  function startEditing() {
+    setEditName(client.name);
+    setEditPhone(client.phone);
+    setEditNotes(client.notes ?? "");
+    setEditError("");
+    setEditing(true);
+  }
+
+  async function saveEdit(event: React.FormEvent) {
+    event.preventDefault();
+    setEditBusy(true);
+    setEditError("");
+    const { error: rpcError } = await supabase.rpc("update_client", {
+      p_client_id: client.id,
+      p_name: editName,
+      p_phone: editPhone,
+      p_notes: editNotes,
+    });
+    setEditBusy(false);
+    if (rpcError) return setEditError(rpcError.message);
+    setEditing(false);
+    onChanged();
+  }
+
+  async function confirmDelete() {
+    setDeleteBusy(true);
+    setDeleteError("");
+    const { error: rpcError } = await supabase.rpc("delete_client", { p_client_id: client.id });
+    setDeleteBusy(false);
+    if (rpcError) return setDeleteError(rpcError.message);
+    setConfirmingDelete(false);
+    onDeleted();
   }
 
   const paidShare = client.billed > 0 ? Math.round((client.paid / client.billed) * 100) : 0;
@@ -287,6 +353,64 @@ function Ledger({
         </div>
       </div>
 
+      {client.notes && <p className="mt-2 rounded-lg bg-paper p-2.5 text-sm">{client.notes}</p>}
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button type="button" className="btn btn-quiet btn-small" onClick={startEditing}>
+          <Icon name="edit" size={15} />
+          Edit client
+        </button>
+        {profile?.role === "admin" && (
+          <button
+            type="button"
+            className="btn btn-danger-quiet btn-small"
+            onClick={() => {
+              setDeleteError("");
+              setConfirmingDelete(true);
+            }}
+          >
+            <Icon name="trash" size={15} />
+            Delete client
+          </button>
+        )}
+      </div>
+
+      {editing && (
+        <form onSubmit={saveEdit} className="rise mt-3 space-y-3 rounded-xl bg-paper p-3">
+          <div>
+            <label className="label" htmlFor={`${fieldId}-name`}>Name</label>
+            <input id={`${fieldId}-name`} className="field" value={editName} onChange={(e) => setEditName(e.target.value)} required />
+          </div>
+          <div>
+            <label className="label" htmlFor={`${fieldId}-phone`}>Phone</label>
+            <input id={`${fieldId}-phone`} className="field" type="tel" inputMode="tel" value={editPhone} onChange={(e) => setEditPhone(e.target.value)} required />
+          </div>
+          <div>
+            <label className="label" htmlFor={`${fieldId}-notes`}>
+              Notes <span className="font-normal text-muted">(optional)</span>
+            </label>
+            <input id={`${fieldId}-notes`} className="field" value={editNotes} onChange={(e) => setEditNotes(e.target.value)} />
+          </div>
+          {editError && <ErrorNote>{editError}</ErrorNote>}
+          <div className="grid grid-cols-2 gap-2">
+            <button type="button" className="btn btn-quiet" onClick={() => setEditing(false)}>Cancel</button>
+            <button className="btn btn-primary" disabled={editBusy}>{editBusy ? "Saving…" : "Save changes"}</button>
+          </div>
+        </form>
+      )}
+
+      {confirmingDelete && (
+        <ConfirmDialog
+          title="Delete this client?"
+          message={`${client.name} will be removed. Their past sales stay in your totals under the same name. This cannot be undone.`}
+          confirmLabel="Delete client"
+          busy={deleteBusy}
+          error={deleteError}
+          onConfirm={confirmDelete}
+          onCancel={() => setConfirmingDelete(false)}
+        />
+      )}
+
       <div className="mt-3">
         <div className="flex justify-between text-xs text-muted">
           <span className="money">Paid {money(client.paid)} of {money(client.billed)}</span>
@@ -298,28 +422,24 @@ function Ledger({
       </div>
 
       {client.balance > 0 && (
-        <form onSubmit={pay} className="mt-4">
-          <label className="label" htmlFor={payFieldId}>Record a payment</label>
-          <div className="flex gap-2">
-            <input
-              id={payFieldId}
-              className="field money min-w-0 flex-1"
-              type="number"
-              inputMode="decimal"
-              min="0"
-              step="any"
-              max={client.balance}
-              placeholder="0"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-            />
-            <button type="button" className="btn btn-quiet shrink-0 !px-3" onClick={() => setAmount(String(client.balance))}>
-              Full
-            </button>
-            <button className="btn btn-primary shrink-0" disabled={busy}>
-              {busy ? "Saving…" : "Save"}
-            </button>
-          </div>
+        <form onSubmit={pay} className="mt-4 space-y-3">
+          <PaymentFields
+            value={payment}
+            onChange={setPayment}
+            amountLabel="Record a payment"
+            amountAction={
+              <button
+                type="button"
+                className="btn btn-quiet shrink-0 !px-3"
+                onClick={() => setPayment({ ...payment, amount: String(client.balance) })}
+              >
+                Full
+              </button>
+            }
+          />
+          <button className="btn btn-primary w-full" disabled={busy}>
+            {busy ? "Saving…" : "Save payment"}
+          </button>
         </form>
       )}
 
